@@ -185,5 +185,55 @@ describeWithFixture(
         signed.map(order => order.parameters),
       )
     })
+
+    it("approves a criteria offer item for all, even with exactApproval", async () => {
+      const { seaportContract, seaport, testErc721, ethers } = fixture
+
+      const [offerer, zone] = await ethers.getSigners()
+      await testErc721.mint(await offerer.getAddress(), "1")
+
+      // A collection offer: the order is criteria-based, so
+      // identifierOrCriteria holds a merkle root rather than a token id.
+      const useCase = await seaport.createOrder(
+        {
+          startTime: "0",
+          endTime: MAX_INT.toString(),
+          salt: generateRandomSalt(),
+          offer: [
+            {
+              itemType: ItemType.ERC721,
+              token: await testErc721.getAddress(),
+              identifiers: [],
+            },
+          ],
+          consideration: [
+            {
+              amount: parseEther("10").toString(),
+              recipient: await offerer.getAddress(),
+            },
+          ],
+          fees: [{ recipient: await zone.getAddress(), basisPoints: 250 }],
+        },
+        undefined,
+        true,
+      )
+
+      const approvals = useCase.actions.filter(
+        (action): action is ApprovalAction => action.type === "approval",
+      )
+      expect(approvals).to.have.lengthOf(1)
+
+      // approve() takes a token id. Passing the criteria root reverts, and the
+      // fulfiller picks the id at fulfillment time anyway, so the only approval
+      // that can cover a criteria item is setApprovalForAll.
+      await approvals[0].transactionMethods.transact()
+
+      expect(
+        await testErc721.isApprovedForAll(
+          await offerer.getAddress(),
+          await seaportContract.getAddress(),
+        ),
+      ).to.be.true
+    })
   },
 )

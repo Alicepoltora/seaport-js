@@ -6,7 +6,7 @@ import {
 } from "../typechain-types/index"
 import type { ApprovalAction, Item } from "../types"
 import type { InsufficientApprovals } from "./balanceAndApprovalCheck"
-import { isErc721Item, isErc1155Item } from "./item"
+import { isCriteriaItem, isErc721Item, isErc1155Item } from "./item"
 import { getTransactionMethods } from "./usecase"
 
 export const approvedItemAmount = async (
@@ -44,16 +44,28 @@ export const getApprovalDedupKey = (
   const token = approval.token.toLowerCase()
   const operator = approval.operator.toLowerCase()
 
-  if (
-    exactApproval &&
-    isErc721Item(approval.itemType) &&
-    !isErc1155Item(approval.itemType)
-  ) {
+  if (canApproveSingleToken(approval.itemType, exactApproval)) {
     return `${token}:${operator}:${approval.identifierOrCriteria}`
   }
 
   return `${token}:${operator}`
 }
+
+/**
+ * Whether an item can be covered by approving one token id rather than the
+ * whole collection.
+ *
+ * Only a non-criteria ERC721 can. ERC1155 has no per-id approval. A criteria
+ * item names a set of ids, and the fulfiller chooses which one at fulfillment
+ * time, so no single id covers it -- and when no criteria are resolved,
+ * identifierOrCriteria is the merkle root rather than an id at all, which makes
+ * `approve` revert outright.
+ *
+ * Shared by getApprovalDedupKey and getApprovalActions so that the key an
+ * approval is deduped under always matches the call that approval will make.
+ */
+const canApproveSingleToken = (itemType: ItemType, exactApproval: boolean) =>
+  exactApproval && isErc721Item(itemType) && !isCriteriaItem(itemType)
 
 /**
  * Get approval actions given a list of insufficient approvals.
@@ -86,20 +98,21 @@ export function getApprovalActions(
         identifierOrCriteria,
         requiredApprovedAmount,
       }) => {
-        const isErc1155 = isErc1155Item(itemType)
-        if (isErc721Item(itemType) || isErc1155) {
+        if (isErc721Item(itemType) || isErc1155Item(itemType)) {
           // setApprovalForAll check is the same for both ERC721 and ERC1155, defaulting to ERC721
           const contract = TestERC721__factory.connect(token, signer)
-          const transactionMethods =
-            exactApproval && !isErc1155
-              ? getTransactionMethods(signer, contract, "approve", [
-                  operator,
-                  identifierOrCriteria,
-                ])
-              : getTransactionMethods(signer, contract, "setApprovalForAll", [
-                  operator,
-                  true,
-                ])
+          const transactionMethods = canApproveSingleToken(
+            itemType,
+            exactApproval,
+          )
+            ? getTransactionMethods(signer, contract, "approve", [
+                operator,
+                identifierOrCriteria,
+              ])
+            : getTransactionMethods(signer, contract, "setApprovalForAll", [
+                operator,
+                true,
+              ])
 
           return {
             type: "approval",
